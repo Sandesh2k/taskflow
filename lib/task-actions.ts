@@ -12,16 +12,35 @@ import Workspace from "@/models/Workspace";
 const taskStatusSchema = z.enum(["todo", "in_progress", "done"]);
 const taskPrioritySchema = z.enum(["low", "medium", "high"]);
 
+const parseTags = (value: string) =>
+  Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .map((tag) => tag.toLowerCase())
+        .slice(0, 8),
+    ),
+  );
+
 const createTaskSchema = z.object({
   workspaceId: z.string().min(1, "Select a workspace."),
   title: z.string().trim().min(2, "Title must be at least 2 characters.").max(120),
   description: z.string().trim().max(1000).default(""),
   status: taskStatusSchema.default("todo"),
   priority: taskPrioritySchema.default("medium"),
+  assignee: z.string().optional().default(""),
+  tags: z.string().default(""),
 });
 
 const updateTaskSchema = createTaskSchema.extend({
   taskId: z.string().min(1, "Task ID is required."),
+});
+
+const commentSchema = z.object({
+  taskId: z.string().min(1, "Task ID is required."),
+  message: z.string().trim().min(1, "Comment cannot be empty.").max(1200),
 });
 
 async function ensureWorkspaceAccess(userId: string, workspaceId?: string) {
@@ -77,6 +96,8 @@ export async function createTaskAction(formData: FormData) {
     description: String(formData.get("description") ?? ""),
     status: String(formData.get("status") ?? "todo"),
     priority: String(formData.get("priority") ?? "medium"),
+    assignee: String(formData.get("assignee") ?? ""),
+    tags: String(formData.get("tags") ?? ""),
   };
 
   const parsed = createTaskSchema.safeParse(rawData);
@@ -92,6 +113,8 @@ export async function createTaskAction(formData: FormData) {
     redirect("/tasks");
   }
 
+  const assigneeId = parsed.data.assignee ? new mongoose.Types.ObjectId(parsed.data.assignee) : null;
+
   await connectToDatabase();
 
   await Task.create({
@@ -100,6 +123,8 @@ export async function createTaskAction(formData: FormData) {
     description: parsed.data.description || undefined,
     status: parsed.data.status,
     priority: parsed.data.priority,
+    assignee: assigneeId,
+    tags: parseTags(parsed.data.tags),
     createdBy: new mongoose.Types.ObjectId(userId),
   });
 
@@ -124,6 +149,8 @@ export async function updateTaskAction(formData: FormData) {
     description: String(formData.get("description") ?? ""),
     status: String(formData.get("status") ?? "todo"),
     priority: String(formData.get("priority") ?? "medium"),
+    assignee: String(formData.get("assignee") ?? ""),
+    tags: String(formData.get("tags") ?? ""),
   };
 
   const parsed = updateTaskSchema.safeParse(rawData);
@@ -144,6 +171,8 @@ export async function updateTaskAction(formData: FormData) {
     redirect("/tasks");
   }
 
+  const assigneeId = parsed.data.assignee ? new mongoose.Types.ObjectId(parsed.data.assignee) : null;
+
   await connectToDatabase();
 
   await Task.findByIdAndUpdate(parsed.data.taskId, {
@@ -152,12 +181,44 @@ export async function updateTaskAction(formData: FormData) {
     description: parsed.data.description || "",
     status: parsed.data.status,
     priority: parsed.data.priority,
+    assignee: assigneeId,
+    tags: parseTags(parsed.data.tags),
   });
 
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${parsed.data.taskId}`);
   redirect(`/tasks/${parsed.data.taskId}`);
+}
+
+export async function updateTaskStatusAction(formData: FormData) {
+  const session = await getSafeSession();
+
+  if (!session?.user?.id) {
+    redirect("/login");
+  }
+
+  const taskId = String(formData.get("taskId") ?? "");
+  const status = String(formData.get("status") ?? "todo");
+
+  if (!taskId || !taskStatusSchema.safeParse(status).success) {
+    redirect("/tasks");
+  }
+
+  const task = await ensureTaskAccess(session.user.id, taskId);
+
+  if (!task) {
+    redirect("/tasks");
+  }
+
+  await connectToDatabase();
+
+  await Task.findByIdAndUpdate(taskId, { status });
+
+  revalidatePath("/dashboard");
+  revalidatePath("/tasks");
+  revalidatePath(`/tasks/${taskId}`);
+  redirect("/tasks");
 }
 
 export async function deleteTaskAction(formData: FormData) {
@@ -185,4 +246,45 @@ export async function deleteTaskAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
   redirect("/tasks");
+}
+
+export async function addTaskCommentAction(formData: FormData) {
+  const session = await getSafeSession();
+
+  if (!session?.user?.id) {
+    redirect("/login");
+  }
+
+  const rawData = {
+    taskId: String(formData.get("taskId") ?? ""),
+    message: String(formData.get("message") ?? ""),
+  };
+
+  const parsed = commentSchema.safeParse(rawData);
+
+  if (!parsed.success) {
+    redirect("/tasks");
+  }
+
+  const task = await ensureTaskAccess(session.user.id, parsed.data.taskId);
+
+  if (!task) {
+    redirect("/tasks");
+  }
+
+  await connectToDatabase();
+
+  await Task.findByIdAndUpdate(parsed.data.taskId, {
+    $push: {
+      comments: {
+        user: new mongoose.Types.ObjectId(session.user.id),
+        message: parsed.data.message,
+        createdAt: new Date(),
+      },
+    },
+  });
+
+  revalidatePath("/tasks");
+  revalidatePath(`/tasks/${parsed.data.taskId}`);
+  redirect(`/tasks/${parsed.data.taskId}`);
 }
