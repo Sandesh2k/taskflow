@@ -5,6 +5,7 @@ import {
   buildAssigneeOptions,
   buildStatusCounts,
   isDueThisWeek,
+  normalizeSearchTerm,
   normalizeTags,
   summarizeTopAssignees,
 } from "../lib/task-stats";
@@ -35,6 +36,11 @@ describe("task stats utilities", () => {
     assert.equal(isDueThisWeek(today), true);
     assert.equal(isDueThisWeek(nearFuture), true);
     assert.equal(isDueThisWeek(farFuture), false);
+  });
+
+  it("normalizes a full-text search phrase for task lookups", () => {
+    assert.equal(normalizeSearchTerm("  Design   sprint  review  "), "design sprint review");
+    assert.equal(normalizeSearchTerm("   "), "");
   });
 
   it("summarizes the top assignees by count", () => {

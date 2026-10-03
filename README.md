@@ -25,20 +25,27 @@ TaskFlow helps teams organize work in a simple kanban-style board. Users can cre
 ## Key features
 - Sign up, sign in, and logout with credential auth
 - Workspace creation and membership tracking
-- Task board with search, status filters, assignee filters, sorting, and tag filters
+- Task board with full-text search, status filters, assignee filters, sorting, and tag filters
 - Task detail page for editing, commenting, and deleting
 - Dashboard analytics with counts and top assignee summaries
+- Dark mode toggle for comfortable day and night usage
 - Access, focus, and form semantics improvements for keyboard and screen-reader friendliness
 
+## Stretch features added
+- Dark mode toggle with persistent browser preference
+- Full-text task search across task titles, descriptions, and tags via MongoDB text index
+
 ## Live URL
-- Production URL: update with your Vercel deployment URL
+- Production URL: https://taskflow-puce-eta.vercel.app/
 
 ## Screenshots
-Add screenshots here as the app is used in production:
 
 - Dashboard overview
+![Dashboard](dashboard.png)
 - Task board filter view
+![Board](image.png)
 - Task detail page with comments
+![Comment](image-1.png)
 
 ## Local setup
 1. Install dependencies:
@@ -67,17 +74,12 @@ NEXTAUTH_URL=http://localhost:3000
 NEXTAUTH_URL_INTERNAL=http://localhost:3000
 ```
 
-For Vercel production, set the same values in Project Settings > Environment Variables and set NEXTAUTH_URL to the live deployment URL.
-
-## Known limitations
-- The app currently assumes workspace membership is manually managed from the dashboard and task creation flow.
-- Task notifications and real-time collaboration are not yet implemented.
-- Analytics are scoped to each user's accessible workspaces, not a cross-tenant global dashboard.
-- MongoDB Atlas network access must allow the current deployment source IP.
+   
+5. Click Deploy. Once the build succeeds, update the live URL in this README and share the production link.
 
 ## Validation notes
 - `npm run build` verifies the project compiles successfully in production mode.
-- `npm test` executes the unit and integration checks for auth, task creation, and comment behavior.
+- `npm test` executes the unit and integration checks for auth, task creation, comment behavior, and the new full-text search normalization.
 
 ## Repo structure
 - `app/` — route pages and app-router screens

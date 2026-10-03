@@ -23,6 +23,13 @@ export interface TaskStatsSummary {
   topAssignees: TopAssigneeStat[];
 }
 
+export function normalizeSearchTerm(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 export function normalizeTags(value: string): string[] {
   return Array.from(
     new Set(

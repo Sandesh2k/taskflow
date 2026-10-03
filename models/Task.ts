@@ -110,6 +110,8 @@ const taskSchema = new Schema<ITask>(
   },
 );
 
+taskSchema.index({ title: "text", description: "text", tags: "text" });
+
 const Task = mongoose.models.Task || mongoose.model<ITask>("Task", taskSchema);
 
 export default Task;

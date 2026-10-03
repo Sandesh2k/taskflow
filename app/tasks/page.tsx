@@ -38,6 +38,7 @@ export default async function TasksPage({
   const assigneeFilter = typeof resolvedParams.assignee === "string" ? resolvedParams.assignee : "all";
   const tagFilter = typeof resolvedParams.tag === "string" ? resolvedParams.tag : "all";
   const searchFilter = typeof resolvedParams.search === "string" ? resolvedParams.search.trim() : "";
+  const normalizedSearch = searchFilter ? searchFilter.replace(/\s+/g, " ").toLowerCase() : "";
   const sortFilter = typeof resolvedParams.sort === "string" ? resolvedParams.sort : "newest";
 
   const workspaceIds = workspaces.map((workspace) => workspace._id);
@@ -59,8 +60,8 @@ export default async function TasksPage({
     query.tags = tagFilter;
   }
 
-  if (searchFilter) {
-    query.title = { $regex: searchFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
+  if (normalizedSearch) {
+    query.$text = { $search: normalizedSearch };
   }
 
   const sortMap: Record<string, Record<string, 1 | -1>> = {
@@ -69,7 +70,7 @@ export default async function TasksPage({
     priority: { priority: -1 },
     title: { title: 1 },
   };
-  const activeSort = sortMap[sortFilter] ?? sortMap.newest;
+  const activeSort = normalizedSearch ? { score: { $meta: "textScore" } } : sortMap[sortFilter] ?? sortMap.newest;
 
   const tasks = workspaceIds.length
     ? await Task.find(query)
@@ -272,7 +273,7 @@ export default async function TasksPage({
               <input
                 name="search"
                 defaultValue={searchFilter}
-                placeholder="Search title"
+                placeholder="Search title, description, or tags"
                 className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
               />
             </div>
