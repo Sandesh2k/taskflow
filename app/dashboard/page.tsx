@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { LogoutButton } from "@/components/auth/LogoutButton";
 import { getSafeSession } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/db";
+import { createTaskAction } from "@/lib/task-actions";
 import Task from "@/models/Task";
 import Workspace from "@/models/Workspace";
 
@@ -39,39 +40,6 @@ async function createWorkspace(formData: FormData) {
     description: description || undefined,
     owner: new mongoose.Types.ObjectId(session.user.id),
     members: [{ userId: new mongoose.Types.ObjectId(session.user.id), role: "owner" }],
-  });
-
-  revalidatePath("/dashboard");
-}
-
-async function createTask(formData: FormData) {
-  "use server";
-
-  const session = await getSafeSession();
-
-  if (!session?.user?.id) {
-    redirect("/login");
-  }
-
-  const workspaceId = String(formData.get("workspaceId") ?? "");
-  const title = String(formData.get("title") ?? "").trim();
-  const description = String(formData.get("description") ?? "").trim();
-  const status = String(formData.get("status") ?? "todo");
-  const priority = String(formData.get("priority") ?? "medium");
-
-  if (!workspaceId || !title) {
-    return;
-  }
-
-  await connectToDatabase();
-
-  await Task.create({
-    workspace: new mongoose.Types.ObjectId(workspaceId),
-    title,
-    description: description || undefined,
-    status: status === "todo" || status === "in_progress" || status === "done" ? status : "todo",
-    priority: priority === "low" || priority === "medium" || priority === "high" ? priority : "medium",
-    createdBy: new mongoose.Types.ObjectId(session.user.id),
   });
 
   revalidatePath("/dashboard");
@@ -119,6 +87,12 @@ export default async function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <Link
+              href="/tasks"
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              View tasks
+            </Link>
             <Link
               href="/profile"
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
@@ -214,7 +188,7 @@ export default async function DashboardPage() {
           <div className="space-y-6">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="text-lg font-semibold text-slate-900">Quick task</h2>
-              <form action={createTask} className="mt-4 space-y-3">
+              <form action={createTaskAction} className="mt-4 space-y-3">
                 <div>
                   <label htmlFor="task-workspace" className="mb-1.5 block text-sm font-medium text-slate-700">
                     Workspace
