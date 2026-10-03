@@ -64,10 +64,26 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
   const descriptionHtml = typeof content === "string" ? content : String(content);
 
   const workspaceMembers = taskWorkspace ? taskWorkspace.members ?? [] : [];
-  const assigneeOptions: Array<{ _id: string; name: string }> = [
-    ...(taskWorkspace?.owner ? [{ _id: String(taskWorkspace.owner), name: "Owner" }] : []),
-    ...workspaceMembers.map((member: { userId?: string | { _id?: string } }) => ({ _id: String(member.userId ?? ""), name: "Member" })),
-  ];
+  const assigneeOptionsMap = new Map<string, { _id: string; name: string }>();
+
+  if (taskWorkspace?.owner) {
+    assigneeOptionsMap.set(String(taskWorkspace.owner), {
+      _id: String(taskWorkspace.owner),
+      name: memberMap.get(String(taskWorkspace.owner))?.name ?? "Owner",
+    });
+  }
+
+  for (const member of workspaceMembers) {
+    const memberId = String(member.userId ?? "");
+    if (!memberId) continue;
+
+    assigneeOptionsMap.set(memberId, {
+      _id: memberId,
+      name: memberMap.get(memberId)?.name ?? "Member",
+    });
+  }
+
+  const assigneeOptions = Array.from(assigneeOptionsMap.values());
 
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-10 text-slate-800">
