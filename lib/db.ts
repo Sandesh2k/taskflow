@@ -29,6 +29,7 @@ export async function connectToDatabase() {
   if (!cached.promise) {
     cached.promise = mongoose.connect(MONGODB_URI, {
       dbName: "taskflow",
+      serverSelectionTimeoutMS: 15000,
     });
   }
 
@@ -36,7 +37,15 @@ export async function connectToDatabase() {
     cached.conn = await cached.promise;
   } catch (error) {
     cached.promise = null;
-    throw error;
+
+    const message =
+      error instanceof Error && /whitelist|network|ENOTFOUND|ECONNREFUSED|SSL|TLS/i.test(error.message)
+        ? "MongoDB Atlas connection failed. Add this machine's public IP to Atlas Network Access and retry."
+        : error instanceof Error
+          ? error.message
+          : "MongoDB connection failed.";
+
+    throw new Error(message);
   }
 
   return cached.conn;
