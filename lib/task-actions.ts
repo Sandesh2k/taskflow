@@ -6,23 +6,14 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getSafeSession } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/db";
+import { normalizeTags } from "@/lib/task-stats";
 import Task from "@/models/Task";
 import Workspace from "@/models/Workspace";
 
 const taskStatusSchema = z.enum(["todo", "in_progress", "done"]);
 const taskPrioritySchema = z.enum(["low", "medium", "high"]);
 
-const parseTags = (value: string) =>
-  Array.from(
-    new Set(
-      value
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean)
-        .map((tag) => tag.toLowerCase())
-        .slice(0, 8),
-    ),
-  );
+const parseTags = (value: string) => normalizeTags(value);
 
 const createTaskSchema = z.object({
   workspaceId: z.string().min(1, "Select a workspace."),

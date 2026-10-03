@@ -11,6 +11,37 @@ const credentialsSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters long."),
 });
 
+export async function authorizeCredentials(
+  credentials: unknown,
+  findUser: (email: string) => Promise<{ _id?: string | { toString(): string }; name: string; email: string; passwordHash: string; image?: string | null } | null>,
+) {
+  const parsed = credentialsSchema.safeParse(credentials);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  const { email, password } = parsed.data;
+  const user = await findUser(email.toLowerCase());
+
+  if (!user || !user.passwordHash) {
+    return null;
+  }
+
+  const isValid = await bcrypt.compare(password, user.passwordHash);
+
+  if (!isValid) {
+    return null;
+  }
+
+  return {
+    id: String(user._id),
+    name: user.name,
+    email: user.email,
+    image: user.image ?? null,
+  };
+}
+
 const authSecret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
 
 if (!authSecret) {
@@ -34,33 +65,12 @@ export const authConfig: NextAuthConfig = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        const parsed = credentialsSchema.safeParse(credentials);
-
-        if (!parsed.success) {
-          return null;
-        }
-
-        const { email, password } = parsed.data;
-
         await connectToDatabase();
-        const user = await User.findOne({ email: email.toLowerCase() }).lean();
 
-        if (!user || !user.passwordHash) {
-          return null;
-        }
-
-        const isValid = await bcrypt.compare(password, user.passwordHash);
-
-        if (!isValid) {
-          return null;
-        }
-
-        return {
-          id: String(user._id),
-          name: user.name,
-          email: user.email,
-          image: user.image ?? null,
-        };
+        return authorizeCredentials(credentials, async (email) => {
+          const user = await User.findOne({ email }).lean();
+          return user;
+        });
       },
     }),
   ],
