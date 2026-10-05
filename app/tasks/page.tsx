@@ -42,26 +42,27 @@ export default async function TasksPage({
   const sortFilter = typeof resolvedParams.sort === "string" ? resolvedParams.sort : "newest";
 
   const workspaceIds = workspaces.map((workspace) => workspace._id);
-  const query: Record<string, unknown> = { workspace: { $in: workspaceIds } };
+  const baseQuery: Record<string, unknown> = { workspace: { $in: workspaceIds } };
 
   if (statusFilter !== "all") {
-    query.status = statusFilter;
+    baseQuery.status = statusFilter;
   }
 
   if (assigneeFilter !== "all") {
     if (assigneeFilter === "unassigned") {
-      query.assignee = null;
+      baseQuery.assignee = null;
     } else {
-      query.assignee = new mongoose.Types.ObjectId(assigneeFilter);
+      baseQuery.assignee = new mongoose.Types.ObjectId(assigneeFilter);
     }
   }
 
-  if (tagFilter !== "all") {
-    query.tags = tagFilter;
+  if (normalizedSearch) {
+    baseQuery.$text = { $search: normalizedSearch };
   }
 
-  if (normalizedSearch) {
-    query.$text = { $search: normalizedSearch };
+  const query: Record<string, unknown> = { ...baseQuery };
+  if (tagFilter !== "all") {
+    query.tags = tagFilter;
   }
 
   const sortMap: Record<string, Record<string, 1 | -1>> = {
@@ -78,6 +79,10 @@ export default async function TasksPage({
         .populate("assignee", "name email")
         .sort(activeSort)
         .lean()
+    : [];
+
+  const tagSourceTasks = workspaceIds.length
+    ? await Task.find(baseQuery).select("tags").lean()
     : [];
 
   const memberOptions: Array<{ id: string; name: string }> = [];
@@ -104,7 +109,7 @@ export default async function TasksPage({
   }
 
   const tagOptions = Array.from(
-    new Set(tasks.flatMap((task: { tags?: string[] }) => (Array.isArray(task.tags) ? task.tags : []))),
+    new Set(tagSourceTasks.flatMap((task: { tags?: string[] }) => (Array.isArray(task.tags) ? task.tags : []))),
   ).sort();
 
   const buildStatusLabel = (status: string) =>

@@ -40,7 +40,7 @@ export async function connectToDatabase() {
 
     const message =
       error instanceof Error && /whitelist|network|ENOTFOUND|ECONNREFUSED|SSL|TLS/i.test(error.message)
-        ? "MongoDB Atlas connection failed. Add this machine's public IP to Atlas Network Access and retry."
+        ? "MongoDB connection failed. If this is Vercel, do not use 127.0.0.1 or localhost. Use a public MongoDB Atlas URI and add your Vercel IP range or 0.0.0.0/0 in Atlas Network Access."
         : error instanceof Error
           ? error.message
           : "MongoDB connection failed.";
