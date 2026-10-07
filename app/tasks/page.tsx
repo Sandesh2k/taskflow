@@ -4,8 +4,14 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { getSafeSession } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/db";
-import { createTaskAction, deleteTaskAction, updateTaskStatusAction } from "@/lib/task-actions";
+import { createTaskAction, deleteTaskAction } from "@/lib/task-actions";
+import { getDueDateStatus } from "@/lib/task-utils";
+import { canUserViewAllTasks, getUserRoleInWorkspace } from "@/lib/workspace-permissions";
+import DashboardLayout from "@/components/DashboardLayout";
+import TaskBoard from "@/components/TaskBoard";
+import TaskForm from "@/components/TaskForm";
 import Task from "@/models/Task";
+import User from "@/models/User";
 import Workspace from "@/models/Workspace";
 
 const statusOrder = ["todo", "in_progress", "done"] as const;
@@ -44,6 +50,25 @@ export default async function TasksPage({
   const workspaceIds = workspaces.map((workspace) => workspace._id);
   const baseQuery: Record<string, unknown> = { workspace: { $in: workspaceIds } };
 
+  // Check if user can view all tasks (admin/owner) or only their own
+  const canViewAll = await Promise.all(
+    workspaceIds.map((id) => canUserViewAllTasks(session.user.id, String(id)))
+  );
+  const hasAdminAccess = canViewAll.some((v) => v);
+
+  // Get user's role in the first workspace for display
+  const userRole = workspaceIds.length > 0
+    ? await getUserRoleInWorkspace(session.user.id, String(workspaceIds[0]))
+    : null;
+
+  // If not admin, only show tasks assigned to them or created by them
+  if (!hasAdminAccess) {
+    baseQuery.$or = [
+      { assignee: new mongoose.Types.ObjectId(session.user.id) },
+      { createdBy: new mongoose.Types.ObjectId(session.user.id) },
+    ];
+  }
+
   if (statusFilter !== "all") {
     baseQuery.status = statusFilter;
   }
@@ -81,31 +106,91 @@ export default async function TasksPage({
         .lean()
     : [];
 
+  // Convert Mongoose objects to plain objects for client component
+  const plainTasks = tasks.map((task) => ({
+    ...task,
+    _id: String(task._id),
+    createdBy: task.createdBy ? String(task.createdBy) : task.createdBy,
+    workspace: task.workspace ? {
+      ...task.workspace,
+      _id: typeof task.workspace._id === 'object' ? String(task.workspace._id) : task.workspace._id,
+    } : task.workspace,
+    assignee: task.assignee ? {
+      ...task.assignee,
+      _id: typeof task.assignee._id === 'object' ? String(task.assignee._id) : task.assignee._id,
+    } : task.assignee,
+    comments: Array.isArray(task.comments) ? task.comments.map((comment: any) => ({
+      ...comment,
+      _id: comment._id ? String(comment._id) : comment._id,
+      user: comment.user ? String(comment.user) : comment.user,
+    })) : [],
+  }));
+
   const tagSourceTasks = workspaceIds.length
     ? await Task.find(baseQuery).select("tags").lean()
     : [];
 
+  // Collect all unique user IDs from workspaces
+  const workspaceMemberMap = new Map<string, Array<{ id: string; name: string }>>();
   const memberOptions: Array<{ id: string; name: string }> = [];
   const seenMemberIds = new Set<string>();
+  const userIds: string[] = [];
 
   for (const workspace of workspaces) {
+    const workspaceId = String(workspace._id);
+    const workspaceMemberOptions: Array<{ id: string; name: string }> = [];
+    const workspaceUserIds: string[] = [];
+    const workspaceSeenIds = new Set<string>();
+
+    // Add members
     for (const member of workspace.members ?? []) {
       const userId = member.userId ? String(member.userId) : "";
-      if (!userId || seenMemberIds.has(userId)) {
-        continue;
+      if (userId && !workspaceSeenIds.has(userId)) {
+        workspaceSeenIds.add(userId);
+        workspaceUserIds.push(userId);
+        if (!seenMemberIds.has(userId)) {
+          seenMemberIds.add(userId);
+          userIds.push(userId);
+        }
       }
-
-      seenMemberIds.add(userId);
-      memberOptions.push({ id: userId, name: "Member" });
     }
 
-    if (workspace.owner) {
+    // Add owner
+    if (workspace.owner && !workspaceSeenIds.has(String(workspace.owner))) {
       const ownerId = String(workspace.owner);
+      workspaceSeenIds.add(ownerId);
+      workspaceUserIds.push(ownerId);
       if (!seenMemberIds.has(ownerId)) {
         seenMemberIds.add(ownerId);
-        memberOptions.push({ id: ownerId, name: "Owner" });
+        userIds.push(ownerId);
       }
     }
+
+    // Fetch user names for this workspace's members
+    const users = workspaceUserIds.length > 0
+      ? await User.find({ _id: { $in: workspaceUserIds } }).select("_id name").lean()
+      : [];
+
+    const userMap = new Map(users.map((u) => [String(u._id), u.name || "Unknown"]));
+
+    // Build member options for this workspace
+    for (const userId of workspaceUserIds) {
+      workspaceMemberOptions.push({ id: userId, name: userMap.get(userId) || "Unknown" });
+    }
+
+    workspaceMemberMap.set(workspaceId, workspaceMemberOptions);
+  }
+
+  // Fetch user names for all unique users across all workspaces
+  const allUsers = userIds.length > 0
+    ? await User.find({ _id: { $in: userIds } }).select("_id name").lean()
+    : [];
+
+  const allUserMap = new Map(allUsers.map((u) => [String(u._id), u.name || "Unknown"]));
+
+  // Build global member options for filter dropdown
+  for (const userId of userIds) {
+    memberOptions.push({ id: userId, name: allUserMap.get(userId) || "Unknown" });
   }
 
   const tagOptions = Array.from(
@@ -116,151 +201,30 @@ export default async function TasksPage({
     status === "in_progress" ? "In progress" : status === "done" ? "Done" : "To do";
 
   return (
-    <main id="main-content" className="min-h-screen bg-slate-100 px-4 py-10 text-slate-800">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">TaskFlow</p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Board & task filters</h1>
-            </div>
-            <div className="flex items-center gap-3">
-              <Link href="/dashboard" prefetch={true} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
-                Dashboard
-              </Link>
-            </div>
-          </div>
-        </header>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Create a task</h2>
-          <form action={createTaskAction} className="mt-4 space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+    <DashboardLayout>
+      <main id="main-content" className="min-h-screen px-4 py-10 text-slate-800">
+        <div className="mx-auto max-w-7xl space-y-6">
+          <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <label htmlFor="task-workspace" className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Workspace
-                </label>
-                <select
-                  id="task-workspace"
-                  name="workspaceId"
-                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                  defaultValue={workspaces[0]?._id ? String(workspaces[0]._id) : ""}
-                  required
-                >
-                  {workspaces.length === 0 ? (
-                    <option value="">Create a workspace first</option>
-                  ) : (
-                    workspaces.map((workspace) => (
-                      <option key={String(workspace._id)} value={String(workspace._id)}>
-                        {workspace.name}
-                      </option>
-                    ))
-                  )}
-                </select>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">TaskFlow</p>
+                <h1 className="mt-2 text-2xl font-semibold text-slate-900">Board & task filters</h1>
               </div>
-
-              <div>
-                <label htmlFor="task-assignee" className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Assignee
-                </label>
-                <select
-                  id="task-assignee"
-                  name="assignee"
-                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                  defaultValue=""
-                >
-                  <option value="">Unassigned</option>
-                  {memberOptions.map((member) => (
-                    <option key={member.id} value={member.id}>
-                      {member.name}
-                    </option>
-                  ))}
-                </select>
+              <div className="flex items-center gap-3">
+                <Link href="/dashboard" prefetch={true} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
+                  Dashboard
+                </Link>
               </div>
             </div>
+          </header>
 
-            <div>
-              <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-slate-700">
-                Title
-              </label>
-              <input
-                id="task-title"
-                name="title"
-                placeholder="Prepare sprint review"
-                required
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-              />
-            </div>
+        <TaskForm 
+          workspaces={workspaces.map(w => ({ _id: String(w._id), name: w.name }))}
+          workspaceMemberMap={Object.fromEntries(workspaceMemberMap)}
+          createTaskAction={createTaskAction}
+        />
 
-            <div>
-              <label htmlFor="task-description" className="mb-1.5 block text-sm font-medium text-slate-700">
-                Description
-              </label>
-              <textarea
-                id="task-description"
-                name="description"
-                rows={4}
-                placeholder="Add markdown details, checklists, and notes..."
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="task-tags" className="mb-1.5 block text-sm font-medium text-slate-700">
-                Tags
-              </label>
-              <input
-                id="task-tags"
-                name="tags"
-                placeholder="design, backend, qa"
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-              />
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label htmlFor="task-status" className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Status
-                </label>
-                <select
-                  id="task-status"
-                  name="status"
-                  defaultValue="todo"
-                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                >
-                  <option value="todo">To do</option>
-                  <option value="in_progress">In progress</option>
-                  <option value="done">Done</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="task-priority" className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Priority
-                </label>
-                <select
-                  id="task-priority"
-                  name="priority"
-                  defaultValue="medium"
-                  className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500"
-            >
-              Add task
-            </button>
-          </form>
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Filter & sort</h2>
@@ -279,7 +243,7 @@ export default async function TasksPage({
                 name="search"
                 defaultValue={searchFilter}
                 placeholder="Search title, description, or tags"
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
               />
             </div>
 
@@ -288,7 +252,7 @@ export default async function TasksPage({
               <select
                 name="status"
                 defaultValue={statusFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
               >
                 <option value="all">All</option>
                 <option value="todo">To do</option>
@@ -302,7 +266,7 @@ export default async function TasksPage({
               <select
                 name="assignee"
                 defaultValue={assigneeFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
               >
                 <option value="all">All</option>
                 <option value="unassigned">Unassigned</option>
@@ -319,7 +283,7 @@ export default async function TasksPage({
               <select
                 name="tag"
                 defaultValue={tagFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
               >
                 <option value="all">All tags</option>
                 {tagOptions.map((tag) => (
@@ -335,7 +299,7 @@ export default async function TasksPage({
               <select
                 name="sort"
                 defaultValue={sortFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
               >
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
@@ -346,101 +310,31 @@ export default async function TasksPage({
 
             <button
               type="submit"
-              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 md:col-span-2 xl:col-span-5"
+              className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 md:col-span-2 xl:col-span-5"
             >
               Apply filters
             </button>
           </form>
         </section>
 
+        {/* Role indicator banner */}
+        <div className={`rounded-2xl border p-4 text-sm ${
+          hasAdminAccess
+            ? "bg-sky-50 border-sky-200 text-sky-800"
+            : "bg-amber-50 border-amber-200 text-amber-800"
+        }`}>
+          <p className="font-medium">
+            {hasAdminAccess
+              ? `👑 ${userRole === "owner" ? "Owner" : "Admin"} view: You can see all tasks in your workspaces.`
+              : `👤 Member view: You can only see tasks assigned to you or created by you.`}
+          </p>
+        </div>
+
         <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-sm text-slate-500">Loading task board...</div>}>
-          <section className="grid gap-4 xl:grid-cols-3">
-            {statusOrder.map((status) => {
-              const columnTasks = tasks.filter((task) => task.status === status);
-
-              return (
-                <div key={status} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="mb-4 flex items-center justify-between">
-                    <h3 className="text-base font-semibold text-slate-900">{buildStatusLabel(status)}</h3>
-                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-                      {columnTasks.length}
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {columnTasks.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                        No tasks here.
-                      </div>
-                    ) : (
-                      columnTasks.map((task: { _id?: unknown; title?: string; status?: string; priority?: string; workspace?: { name?: string } | string; assignee?: { name?: string } | string; tags?: string[] }) => {
-                        const assigneeName =
-                          typeof task.assignee === "string" ? task.assignee : task.assignee?.name ?? "Unassigned";
-
-                        return (
-                          <article key={String(task._id)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <Link href={`/tasks/${String(task._id)}`} prefetch={true} className="font-semibold text-slate-900 hover:text-sky-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
-                                {task.title}
-                              </Link>
-                              <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-600">
-                                {task.priority}
-                              </span>
-                            </div>
-
-                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                              <span className="rounded-full bg-white px-2 py-1">{assigneeName}</span>
-                              <span className="rounded-full bg-white px-2 py-1">
-                                {typeof task.workspace === "string" ? task.workspace : task.workspace?.name ?? "Workspace"}
-                              </span>
-                            </div>
-
-                            {task.tags?.length ? (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {task.tags.map((tag: string) => (
-                                  <span key={`${String(task._id)}-${tag}`} className="rounded-full bg-sky-100 px-2 py-1 text-[10px] font-medium text-sky-700">
-                                    #{tag}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-
-                            <form action={updateTaskStatusAction} className="mt-3 flex gap-2">
-                              <input type="hidden" name="taskId" value={String(task._id)} />
-                              <select
-                                name="status"
-                                defaultValue={task.status}
-                                className="w-full rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 outline-none focus:border-sky-400"
-                              >
-                                <option value="todo">To do</option>
-                                <option value="in_progress">In progress</option>
-                                <option value="done">Done</option>
-                              </select>
-                              <button type="submit" className="rounded-xl bg-slate-900 px-2.5 py-2 text-xs font-medium text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
-                                Save
-                              </button>
-                            </form>
-
-                            <form action={deleteTaskAction} className="mt-2">
-                              <input type="hidden" name="taskId" value={String(task._id)} />
-                              <button
-                                type="submit"
-                                className="w-full rounded-xl border border-rose-200 bg-rose-50 px-2.5 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
-                              >
-                                Delete task
-                              </button>
-                            </form>
-                          </article>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </section>
+          <TaskBoard tasks={plainTasks as any} canEdit={true} />
         </Suspense>
       </div>
     </main>
+    </DashboardLayout>
   );
 }

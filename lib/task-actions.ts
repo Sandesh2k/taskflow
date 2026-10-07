@@ -7,6 +7,7 @@ import { z } from "zod";
 import { getSafeSession } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/db";
 import { normalizeTags } from "@/lib/task-stats";
+import { canUserAssignTasks } from "@/lib/workspace-permissions";
 import Task from "@/models/Task";
 import Workspace from "@/models/Workspace";
 
@@ -23,6 +24,7 @@ const createTaskSchema = z.object({
   priority: taskPrioritySchema.default("medium"),
   assignee: z.string().optional().default(""),
   tags: z.string().default(""),
+  dueDate: z.string().optional().default(""),
 });
 
 const updateTaskSchema = createTaskSchema.extend({
@@ -89,6 +91,7 @@ export async function createTaskAction(formData: FormData) {
     priority: String(formData.get("priority") ?? "medium"),
     assignee: String(formData.get("assignee") ?? ""),
     tags: String(formData.get("tags") ?? ""),
+    dueDate: String(formData.get("dueDate") ?? ""),
   };
 
   const parsed = createTaskSchema.safeParse(rawData);
@@ -104,7 +107,19 @@ export async function createTaskAction(formData: FormData) {
     redirect("/tasks");
   }
 
+  // Check if user can assign tasks (admin/owner only)
+  if (parsed.data.assignee) {
+    const canAssign = await canUserAssignTasks(userId, parsed.data.workspaceId);
+    if (!canAssign) {
+      // Non-admins can only assign to themselves
+      if (parsed.data.assignee !== userId) {
+        redirect("/tasks");
+      }
+    }
+  }
+
   const assigneeId = parsed.data.assignee ? new mongoose.Types.ObjectId(parsed.data.assignee) : null;
+  const dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : null;
 
   await connectToDatabase();
 
@@ -116,6 +131,7 @@ export async function createTaskAction(formData: FormData) {
     priority: parsed.data.priority,
     assignee: assigneeId,
     tags: parseTags(parsed.data.tags),
+    dueDate,
     createdBy: new mongoose.Types.ObjectId(userId),
   });
 
@@ -142,6 +158,7 @@ export async function updateTaskAction(formData: FormData) {
     priority: String(formData.get("priority") ?? "medium"),
     assignee: String(formData.get("assignee") ?? ""),
     tags: String(formData.get("tags") ?? ""),
+    dueDate: String(formData.get("dueDate") ?? ""),
   };
 
   const parsed = updateTaskSchema.safeParse(rawData);
@@ -162,7 +179,53 @@ export async function updateTaskAction(formData: FormData) {
     redirect("/tasks");
   }
 
+  // Check if user is admin/owner
+  const canAssign = await canUserAssignTasks(session.user.id, parsed.data.workspaceId);
+
+  // If not admin/owner, only allow status updates
+  if (!canAssign) {
+    // Check if user is trying to modify fields other than status
+    const currentTask = await Task.findById(parsed.data.taskId).lean();
+    if (!currentTask) {
+      redirect("/tasks");
+    }
+
+    // Only allow status to change, all other fields must remain the same
+    const isOnlyStatusChanging = 
+      String(currentTask.workspace) === parsed.data.workspaceId &&
+      currentTask.title === parsed.data.title &&
+      currentTask.description === parsed.data.description &&
+      currentTask.priority === parsed.data.priority &&
+      String(currentTask.assignee || "") === parsed.data.assignee &&
+      JSON.stringify(currentTask.tags || []) === JSON.stringify(parseTags(parsed.data.tags));
+
+    if (!isOnlyStatusChanging) {
+      redirect(`/tasks/${taskId}`);
+    }
+  } else {
+    // Admin/owner can assign tasks to anyone
+    if (parsed.data.assignee) {
+      if (parsed.data.assignee !== session.user.id) {
+        // Admin assigning to someone else is allowed
+      }
+    }
+  }
+
   const assigneeId = parsed.data.assignee ? new mongoose.Types.ObjectId(parsed.data.assignee) : null;
+  const dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : null;
+
+  // Validate status transitions: prevent Todo -> Done and Done -> Todo
+  const currentTask = await Task.findById(parsed.data.taskId).lean();
+  if (!currentTask) {
+    redirect("/tasks");
+  }
+
+  if (currentTask.status === "todo" && parsed.data.status === "done") {
+    redirect(`/tasks/${taskId}`);
+  }
+  if (currentTask.status === "done" && parsed.data.status === "todo") {
+    redirect(`/tasks/${taskId}`);
+  }
 
   await connectToDatabase();
 
@@ -174,6 +237,7 @@ export async function updateTaskAction(formData: FormData) {
     priority: parsed.data.priority,
     assignee: assigneeId,
     tags: parseTags(parsed.data.tags),
+    dueDate,
   });
 
   revalidatePath("/dashboard");
@@ -202,6 +266,14 @@ export async function updateTaskStatusAction(formData: FormData) {
     redirect("/tasks");
   }
 
+  // Validate status transitions: prevent Todo -> Done and Done -> Todo
+  if (task.status === "todo" && status === "done") {
+    redirect("/tasks");
+  }
+  if (task.status === "done" && status === "todo") {
+    redirect("/tasks");
+  }
+
   await connectToDatabase();
 
   await Task.findByIdAndUpdate(taskId, { status });
@@ -210,6 +282,42 @@ export async function updateTaskStatusAction(formData: FormData) {
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${taskId}`);
   redirect("/tasks");
+}
+
+export async function updateTaskStatusById(taskId: string, status: string) {
+  const session = await getSafeSession();
+
+  if (!session?.user?.id) {
+    return { success: false, error: "Unauthorized" };
+  }
+
+  if (!taskId || !taskStatusSchema.safeParse(status).success) {
+    return { success: false, error: "Invalid input" };
+  }
+
+  const task = await ensureTaskAccess(session.user.id, taskId);
+
+  if (!task) {
+    return { success: false, error: "Task not found" };
+  }
+
+  // Validate status transitions: prevent Todo -> Done and Done -> Todo
+  if (task.status === "todo" && status === "done") {
+    return { success: false, error: "Invalid status transition" };
+  }
+  if (task.status === "done" && status === "todo") {
+    return { success: false, error: "Invalid status transition" };
+  }
+
+  await connectToDatabase();
+
+  await Task.findByIdAndUpdate(taskId, { status });
+
+  revalidatePath("/dashboard");
+  revalidatePath("/tasks");
+  revalidatePath(`/tasks/${taskId}`);
+
+  return { success: true };
 }
 
 export async function deleteTaskAction(formData: FormData) {
@@ -228,6 +336,14 @@ export async function deleteTaskAction(formData: FormData) {
   const task = await ensureTaskAccess(session.user.id, taskId);
 
   if (!task) {
+    redirect("/tasks");
+  }
+
+  // Check if user is admin/owner - only they can delete tasks
+  const workspaceId = typeof task.workspace === "string" ? task.workspace : String(task.workspace._id);
+  const canDelete = await canUserAssignTasks(session.user.id, workspaceId);
+  
+  if (!canDelete) {
     redirect("/tasks");
   }
 
@@ -278,4 +394,49 @@ export async function addTaskCommentAction(formData: FormData) {
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${parsed.data.taskId}`);
   redirect(`/tasks/${parsed.data.taskId}`);
+}
+
+export async function deleteTaskCommentAction(formData: FormData) {
+  const session = await getSafeSession();
+
+  if (!session?.user?.id) {
+    redirect("/login");
+  }
+
+  const taskId = String(formData.get("taskId") ?? "");
+  const commentIndex = Number(formData.get("commentIndex") ?? "");
+
+  if (!taskId || isNaN(commentIndex)) {
+    redirect("/tasks");
+  }
+
+  const task = await ensureTaskAccess(session.user.id, taskId);
+
+  if (!task) {
+    redirect("/tasks");
+  }
+
+  // Check if user is admin/owner - only they can delete comments
+  const workspaceId = typeof task.workspace === "string" ? task.workspace : String(task.workspace._id);
+  const canDelete = await canUserAssignTasks(session.user.id, workspaceId);
+  
+  if (!canDelete) {
+    redirect(`/tasks/${taskId}`);
+  }
+
+  await connectToDatabase();
+
+  const taskDoc = await Task.findById(taskId).lean();
+  if (!taskDoc || !Array.isArray(taskDoc.comments)) {
+    redirect(`/tasks/${taskId}`);
+  }
+
+  // Remove the comment at the specified index
+  taskDoc.comments.splice(commentIndex, 1);
+
+  await Task.findByIdAndUpdate(taskId, { comments: taskDoc.comments });
+
+  revalidatePath("/tasks");
+  revalidatePath(`/tasks/${taskId}`);
+  redirect(`/tasks/${taskId}`);
 }

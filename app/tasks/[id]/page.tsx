@@ -3,7 +3,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getSafeSession } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/db";
-import { addTaskCommentAction, deleteTaskAction, updateTaskAction } from "@/lib/task-actions";
+import { addTaskCommentAction, deleteTaskAction, deleteTaskCommentAction, updateTaskAction } from "@/lib/task-actions";
+import { getDueDateStatus } from "@/lib/task-utils";
+import { canUserViewTask, canUserAssignTasks } from "@/lib/workspace-permissions";
+import DashboardLayout from "@/components/DashboardLayout";
 import Task from "@/models/Task";
 import User from "@/models/User";
 import Workspace from "@/models/Workspace";
@@ -24,6 +27,12 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
     .lean();
 
   if (!task) {
+    notFound();
+  }
+
+  // Check if user has permission to view this task
+  const canView = await canUserViewTask(session.user.id, id);
+  if (!canView) {
     notFound();
   }
 
@@ -62,6 +71,7 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
 
   const content = marked.parse(task.description ?? "", { gfm: true, breaks: true });
   const descriptionHtml = typeof content === "string" ? content : String(content);
+  const dueDateStatus = getDueDateStatus(task.dueDate, task.status, task.updatedAt);
 
   const workspaceMembers = taskWorkspace ? taskWorkspace.members ?? [] : [];
   const assigneeOptionsMap = new Map<string, { _id: string; name: string }>();
@@ -85,25 +95,29 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
 
   const assigneeOptions = Array.from(assigneeOptionsMap.values());
 
+  // Check if user can edit task (admin/owner can edit all, members can only change status)
+  const canEditTask = await canUserAssignTasks(session.user.id, workspaceId);
+
   return (
-    <main className="min-h-screen bg-slate-100 px-4 py-10 text-slate-800">
-      <div className="mx-auto max-w-5xl space-y-6">
-        <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">TaskFlow</p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">{task.title}</h1>
+    <DashboardLayout>
+      <main className="min-h-screen px-4 py-10 text-slate-800">
+        <div className="mx-auto max-w-5xl space-y-6">
+          <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">TaskFlow</p>
+                <h1 className="mt-2 text-2xl font-semibold text-slate-900">{task.title}</h1>
+              </div>
+              <div className="flex items-center gap-3">
+                <Link href="/tasks" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                  Back to tasks
+                </Link>
+                <Link href="/dashboard" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800">
+                  Dashboard
+                </Link>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              <Link href="/tasks" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                Back to tasks
-              </Link>
-              <Link href="/dashboard" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800">
-                Dashboard
-              </Link>
-            </div>
-          </div>
-        </header>
+          </header>
 
         <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <article className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -111,6 +125,11 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
               <span className="rounded-full bg-slate-100 px-2 py-1">{typeof task.workspace === "string" ? task.workspace : task.workspace?.name ?? "Workspace"}</span>
               <span className="rounded-full bg-slate-100 px-2 py-1">{task.priority}</span>
               <span className="rounded-full bg-slate-100 px-2 py-1">{task.status}</span>
+              {dueDateStatus.text ? (
+                <span className={`rounded-full px-2 py-1 ${dueDateStatus.color}`}>
+                  {dueDateStatus.text}
+                </span>
+              ) : null}
             </div>
 
             <div
@@ -143,9 +162,23 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                       <div key={`${String(task._id)}-comment-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <p className="text-sm font-semibold text-slate-900">{authorName}</p>
-                          <time className="text-xs text-slate-500">
-                            {new Date(comment.createdAt ?? Date.now()).toLocaleString()}
-                          </time>
+                          <div className="flex items-center gap-2">
+                            <time className="text-xs text-slate-500">
+                              {new Date(comment.createdAt ?? Date.now()).toLocaleString()}
+                            </time>
+                            {canEditTask && (
+                              <form action={deleteTaskCommentAction}>
+                                <input type="hidden" name="taskId" value={String(task._id)} />
+                                <input type="hidden" name="commentIndex" value={index} />
+                                <button
+                                  type="submit"
+                                  className="text-xs text-red-600 hover:text-red-800"
+                                >
+                                  Delete
+                                </button>
+                              </form>
+                            )}
+                          </div>
                         </div>
                         <p className="text-sm leading-relaxed text-slate-700">{comment.message}</p>
                       </div>
@@ -172,61 +205,87 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
 
           <aside className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Edit task</h2>
+              <h2 className="text-lg font-semibold text-slate-900">
+                {canEditTask ? "Edit task" : "Update status"}
+              </h2>
+              {!canEditTask && (
+                <p className="mt-1 text-xs text-slate-500">As a member, you can only change the task status.</p>
+              )}
               <form action={updateTaskAction} className="mt-4 space-y-3">
                 <input type="hidden" name="taskId" value={String(task._id)} />
                 <input type="hidden" name="workspaceId" value={workspaceId} />
+                <input type="hidden" name="title" value={task.title} />
+                <input type="hidden" name="description" value={task.description ?? ""} />
+                <input type="hidden" name="tags" value={(task.tags ?? []).join(", ")} />
+                <input type="hidden" name="dueDate" value={task.dueDate ? new Date(task.dueDate).toISOString().split('T')[0] : ""} />
+                <input type="hidden" name="priority" value={task.priority} />
+                <input type="hidden" name="assignee" value={assigneeId} />
 
-                <div>
-                  <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Title
-                  </label>
-                  <input
-                    id="task-title"
-                    name="title"
-                    defaultValue={task.title}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                    required
-                  />
-                </div>
+                {canEditTask ? (
+                  <>
+                    <div>
+                      <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Title
+                      </label>
+                      <input
+                        id="task-title"
+                        name="title"
+                        defaultValue={task.title}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                        required
+                      />
+                    </div>
 
-                <div>
-                  <label htmlFor="task-description" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Description
-                  </label>
-                  <textarea
-                    id="task-description"
-                    name="description"
-                    rows={6}
-                    defaultValue={task.description ?? ""}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                  />
-                </div>
+                    <div>
+                      <label htmlFor="task-description" className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Description
+                      </label>
+                      <textarea
+                        id="task-description"
+                        name="description"
+                        rows={6}
+                        defaultValue={task.description ?? ""}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                      />
+                    </div>
 
-                <div>
-                  <label htmlFor="task-tags-edit" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Tags
-                  </label>
-                  <input
-                    id="task-tags-edit"
-                    name="tags"
-                    defaultValue={(task.tags ?? []).join(", ")}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                  />
-                </div>
+                    <div>
+                      <label htmlFor="task-tags-edit" className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Tags
+                      </label>
+                      <input
+                        id="task-tags-edit"
+                        name="tags"
+                        defaultValue={(task.tags ?? []).join(", ")}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                      />
+                    </div>
 
-                <div>
-                  <label htmlFor="task-assignee-edit" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Assignee
-                  </label>
-                  <select
-                    id="task-assignee-edit"
-                    name="assignee"
-                    defaultValue={assigneeId}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
-                  >
-                    <option value="">Unassigned</option>
-                    {assigneeOptions.map((member) => (
+                    <div>
+                      <label htmlFor="task-due-date-edit" className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Due date
+                      </label>
+                      <input
+                        id="task-due-date-edit"
+                        name="dueDate"
+                        type="date"
+                        defaultValue={task.dueDate ? new Date(task.dueDate).toISOString().split('T')[0] : ""}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="task-assignee-edit" className="mb-1.5 block text-sm font-medium text-slate-700">
+                        Assignee
+                      </label>
+                      <select
+                        id="task-assignee-edit"
+                        name="assignee"
+                        defaultValue={assigneeId}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                      >
+                        <option value="">Unassigned</option>
+                        {assigneeOptions.map((member) => (
                       <option key={String(member._id)} value={String(member._id)}>
                         {member.name}
                       </option>
@@ -245,9 +304,9 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                       defaultValue={task.status}
                       className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
                     >
-                      <option value="todo">To do</option>
+                      <option value="todo" disabled={task.status === "done"}>To do</option>
                       <option value="in_progress">In progress</option>
-                      <option value="done">Done</option>
+                      <option value="done" disabled={task.status === "todo"}>Done</option>
                     </select>
                   </div>
 
@@ -267,6 +326,25 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
                     </select>
                   </div>
                 </div>
+                  </>
+                ) : (
+                  // Member view - only status can be changed
+                  <div>
+                    <label htmlFor="task-status" className="mb-1.5 block text-sm font-medium text-slate-700">
+                      Status
+                    </label>
+                    <select
+                      id="task-status"
+                      name="status"
+                      defaultValue={task.status}
+                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
+                    >
+                      <option value="todo" disabled={task.status === "done"}>To do</option>
+                      <option value="in_progress">In progress</option>
+                      <option value="done" disabled={task.status === "todo"}>Done</option>
+                    </select>
+                  </div>
+                )}
 
                 <button
                   type="submit"
@@ -277,21 +355,24 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
               </form>
             </div>
 
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900">Delete task</h3>
-              <form action={deleteTaskAction} className="mt-3">
-                <input type="hidden" name="taskId" value={String(task._id)} />
-                <button
-                  type="submit"
-                  className="w-full rounded-xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
-                >
-                  Delete task
-                </button>
-              </form>
-            </div>
+            {canEditTask && (
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Delete task</h3>
+                <form action={deleteTaskAction} className="mt-3">
+                  <input type="hidden" name="taskId" value={String(task._id)} />
+                  <button
+                    type="submit"
+                    className="w-full rounded-xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+                  >
+                    Delete task
+                  </button>
+                </form>
+              </div>
+            )}
           </aside>
         </section>
       </div>
     </main>
+    </DashboardLayout>
   );
 }
