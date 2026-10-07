@@ -57,7 +57,9 @@ async function createWorkspace(formData: FormData) {
   }
 
   // Parse member emails and find corresponding users
-  const members = [{ userId: new mongoose.Types.ObjectId(session.user.id), role: "owner" as const }];
+  const members: Array<{ userId: mongoose.Types.ObjectId; role: "owner" | "member" }> = [
+    { userId: new mongoose.Types.ObjectId(session.user.id), role: "owner" },
+  ];
 
   if (memberEmails) {
     const User = (await import("@/models/User")).default;
@@ -131,9 +133,11 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
+  const userId = session.user.id;
+
   await connectToDatabase();
 
-  const userObjectId = new mongoose.Types.ObjectId(session.user.id);
+  const userObjectId = new mongoose.Types.ObjectId(userId);
   const workspaces = await Workspace.find({
     $or: [{ owner: userObjectId }, { "members.userId": userObjectId }],
   })
@@ -145,15 +149,15 @@ export default async function DashboardPage() {
 
   // Check if user can view all tasks (admin/owner) or only their own
   const canViewAll = await Promise.all(
-    workspaceIds.map((id) => canUserAssignTasks(session.user.id, String(id)))
+    workspaceIds.map((id) => canUserAssignTasks(userId, String(id)))
   );
   const hasAdminAccess = canViewAll.some((v) => v);
 
   // If not admin, only show tasks assigned to them or created by them
   if (!hasAdminAccess) {
     baseQuery.$or = [
-      { assignee: new mongoose.Types.ObjectId(session.user.id) },
-      { createdBy: new mongoose.Types.ObjectId(session.user.id) },
+      { assignee: new mongoose.Types.ObjectId(userId) },
+      { createdBy: new mongoose.Types.ObjectId(userId) },
     ];
   }
 
@@ -169,7 +173,7 @@ export default async function DashboardPage() {
   const todoCount = tasks.filter((task) => task.status === "todo").length;
   const inProgressCount = tasks.filter((task) => task.status === "in_progress").length;
   const doneCount = tasks.filter((task) => task.status === "done").length;
-  const stats = await getTaskStatsForUser(session.user.id);
+  const stats = await getTaskStatsForUser(userId);
 
   return (
     <DashboardLayout>
@@ -275,7 +279,7 @@ export default async function DashboardPage() {
                 ) : (
                   <>
                     {workspaces.slice(0, 5).map((workspace) => {
-                      const isOwner = String(workspace.owner) === session.user.id;
+                      const isOwner = String(workspace.owner) === userId;
                       const getInitials = (name: string) => {
                         return name
                           .split(" ")

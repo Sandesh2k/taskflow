@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import PerformanceGuard from "@/components/PerformanceGuard";
 import ThemeToggle from "@/components/ThemeToggle";
 import "./globals.css";
 
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-slate-100 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100">
+        <PerformanceGuard />
         <div className="fixed right-4 top-4 z-50">
           <ThemeToggle />
         </div>

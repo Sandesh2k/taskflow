@@ -26,13 +26,15 @@ export default async function TasksPage({
 }) {
   const session = await getSafeSession();
 
-  if (!session?.user) {
+  if (!session?.user?.id) {
     redirect("/login");
   }
 
+  const userId = session.user.id;
+
   await connectToDatabase();
 
-  const userObjectId = new mongoose.Types.ObjectId(session.user.id);
+  const userObjectId = new mongoose.Types.ObjectId(userId);
   const workspaces = await Workspace.find({
     $or: [{ owner: userObjectId }, { "members.userId": userObjectId }],
   })
@@ -52,20 +54,20 @@ export default async function TasksPage({
 
   // Check if user can view all tasks (admin/owner) or only their own
   const canViewAll = await Promise.all(
-    workspaceIds.map((id) => canUserViewAllTasks(session.user.id, String(id)))
+    workspaceIds.map((id) => canUserViewAllTasks(userId, String(id)))
   );
   const hasAdminAccess = canViewAll.some((v) => v);
 
   // Get user's role in the first workspace for display
   const userRole = workspaceIds.length > 0
-    ? await getUserRoleInWorkspace(session.user.id, String(workspaceIds[0]))
+    ? await getUserRoleInWorkspace(userId, String(workspaceIds[0]))
     : null;
 
   // If not admin, only show tasks assigned to them or created by them
   if (!hasAdminAccess) {
     baseQuery.$or = [
-      { assignee: new mongoose.Types.ObjectId(session.user.id) },
-      { createdBy: new mongoose.Types.ObjectId(session.user.id) },
+      { assignee: new mongoose.Types.ObjectId(userId) },
+      { createdBy: new mongoose.Types.ObjectId(userId) },
     ];
   }
 

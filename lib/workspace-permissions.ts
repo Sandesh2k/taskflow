@@ -20,7 +20,7 @@ export async function getUserRoleInWorkspace(
   }
 
   // Check if user is a member
-  const member = workspace.members?.find((m) => String(m.userId) === userId);
+  const member = workspace.members?.find((m: { userId?: mongoose.Types.ObjectId | string }) => String(m.userId) === userId);
   if (member) {
     return member.role;
   }

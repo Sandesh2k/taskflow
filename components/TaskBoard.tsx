@@ -229,7 +229,7 @@ export default function TaskBoard({ tasks, canEdit = true, onDelete }: TaskBoard
               </span>
             </div>
 
-            <SortableContext items={tasksByStatus[status]} strategy={verticalListSortingStrategy}>
+            <SortableContext items={tasksByStatus[status].map((task) => task._id)} strategy={verticalListSortingStrategy}>
               <div className="space-y-3 min-h-[100px]">
                 {tasksByStatus[status].length === 0 ? (
                   <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">

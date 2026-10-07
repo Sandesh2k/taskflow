@@ -9,6 +9,7 @@ import {
   normalizeTags,
   summarizeTopAssignees,
 } from "../lib/task-stats";
+import { isValidPerformanceMeasureRange } from "../lib/performance-guard";
 
 describe("task stats utilities", () => {
   it("normalizes tags into clean lowercase values", () => {
@@ -85,5 +86,11 @@ describe("task stats utilities", () => {
     assert.equal(nextComments.length, 2);
     assert.equal(nextComments[1].message, "Second review needed");
     assert.equal(nextComments[1].user, "user-2");
+  });
+
+  it("rejects invalid performance ranges that would create a negative timestamp", () => {
+    assert.equal(isValidPerformanceMeasureRange(-1, 10), false);
+    assert.equal(isValidPerformanceMeasureRange(10, 5), false);
+    assert.equal(isValidPerformanceMeasureRange(10, 20), true);
   });
 });

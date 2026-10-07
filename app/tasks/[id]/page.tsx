@@ -15,9 +15,11 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
   const { id } = await Promise.resolve(params);
   const session = await getSafeSession();
 
-  if (!session?.user) {
+  if (!session?.user?.id) {
     redirect("/login");
   }
+
+  const userId = session.user.id;
 
   await connectToDatabase();
 
@@ -31,13 +33,16 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
   }
 
   // Check if user has permission to view this task
-  const canView = await canUserViewTask(session.user.id, id);
+  const canView = await canUserViewTask(userId, id);
   if (!canView) {
     notFound();
   }
 
   const taskWorkspace = typeof task.workspace === "string" ? null : task.workspace;
   const workspaceId = typeof task.workspace === "string" ? task.workspace : task.workspace && typeof task.workspace === "object" && "_id" in task.workspace ? String(task.workspace._id) : "";
+  if (!workspaceId) {
+    notFound();
+  }
   const assigneeId = typeof task.assignee === "string"
     ? task.assignee
     : task.assignee && typeof task.assignee === "object" && "_id" in task.assignee
@@ -96,7 +101,7 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
   const assigneeOptions = Array.from(assigneeOptionsMap.values());
 
   // Check if user can edit task (admin/owner can edit all, members can only change status)
-  const canEditTask = await canUserAssignTasks(session.user.id, workspaceId);
+  const canEditTask = await canUserAssignTasks(userId, workspaceId);
 
   return (
     <DashboardLayout>
