@@ -18,8 +18,12 @@ export interface TopAssigneeStat {
 
 export interface TaskStatsSummary {
   totalTasks: number;
+  todoCount: number;
+  inProgressCount: number;
+  doneCount: number;
   tasksByStatus: Record<TaskStatus, number>;
   dueThisWeek: number;
+  workspaceCount: number;
   topAssignees: TopAssigneeStat[];
 }
 
@@ -201,8 +205,12 @@ export async function getTaskStatsForUser(userId: string): Promise<TaskStatsSumm
   if (!workspaceIds.length) {
     return {
       totalTasks: 0,
+      todoCount: 0,
+      inProgressCount: 0,
+      doneCount: 0,
       tasksByStatus: { todo: 0, in_progress: 0, done: 0 },
       dueThisWeek: 0,
+      workspaceCount: 0,
       topAssignees: [],
     };
   }
@@ -267,8 +275,12 @@ export async function getTaskStatsForUser(userId: string): Promise<TaskStatsSumm
 
   return {
     totalTasks: Object.values(statusCounts).reduce((sum, count) => sum + count, 0),
+    todoCount: statusCounts.todo,
+    inProgressCount: statusCounts.in_progress,
+    doneCount: statusCounts.done,
     tasksByStatus: statusCounts,
     dueThisWeek: Array.isArray(result?.dueThisWeek) && result.dueThisWeek.length ? result.dueThisWeek[0].count : 0,
+    workspaceCount: workspaceIds.length,
     topAssignees: Array.isArray(result?.topAssignees) ? result.topAssignees : [],
   };
 }

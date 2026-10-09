@@ -122,6 +122,7 @@ export default function TaskForm({ workspaces, workspaceMemberMap, createTaskAct
             id="task-due-date"
             name="dueDate"
             type="date"
+            required
             className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus:border-sky-400 focus:bg-white"
           />
         </div>

@@ -1,130 +1,8 @@
-import dynamic from "next/dynamic";
-import mongoose from "mongoose";
-import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Suspense } from "react";
-import { LogoutButton } from "@/components/auth/LogoutButton";
 import DashboardLayout from "@/components/DashboardLayout";
 import { getSafeSession } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
-import { createTaskAction } from "@/lib/task-actions";
-import { getDueDateStatus } from "@/lib/task-utils";
 import { getTaskStatsForUser } from "@/lib/task-stats";
-import { canUserAssignTasks } from "@/lib/workspace-permissions";
-import Task from "@/models/Task";
-import Workspace from "@/models/Workspace";
-
-const DashboardStats = dynamic(() => import("@/components/TaskStatsPanel"), {
-  loading: () => <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-sm text-slate-500">Loading overview...</div>,
-});
-
-async function createWorkspace(formData: FormData) {
-  "use server";
-
-  const session = await getSafeSession();
-
-  if (!session?.user?.id) {
-    redirect("/login");
-  }
-
-  const name = String(formData.get("name") ?? "").trim();
-  const description = String(formData.get("description") ?? "").trim();
-  const memberEmails = String(formData.get("memberEmails") ?? "").trim();
-
-  if (!name) {
-    return;
-  }
-
-  await connectToDatabase();
-
-  // Generate unique slug with random suffix to avoid duplicates
-  let slug = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50) || "workspace";
-
-  // Check if slug exists and add random suffix if needed
-  let slugExists = await Workspace.findOne({ slug });
-  let attempts = 0;
-  while (slugExists && attempts < 10) {
-    const randomSuffix = Math.random().toString(36).substring(2, 8);
-    slug = `${slug}-${randomSuffix}`;
-    slugExists = await Workspace.findOne({ slug });
-    attempts++;
-  }
-
-  // Parse member emails and find corresponding users
-  const members: Array<{ userId: mongoose.Types.ObjectId; role: "owner" | "member" }> = [
-    { userId: new mongoose.Types.ObjectId(session.user.id), role: "owner" },
-  ];
-
-  if (memberEmails) {
-    const User = (await import("@/models/User")).default;
-    const emails = memberEmails.split(",").map((e) => e.trim()).filter((e) => e);
-    
-    for (const email of emails) {
-      const user = await User.findOne({ email }).select("_id").lean();
-      if (user) {
-        members.push({
-          userId: user._id,
-          role: "member" as const,
-        });
-      }
-    }
-  }
-
-  await Workspace.create({
-    name,
-    slug,
-    description: description || undefined,
-    owner: new mongoose.Types.ObjectId(session.user.id),
-    members,
-  });
-
-  revalidatePath("/dashboard");
-}
-
-async function deleteWorkspace(formData: FormData) {
-  "use server";
-
-  const session = await getSafeSession();
-
-  if (!session?.user?.id) {
-    redirect("/login");
-  }
-
-  const workspaceId = String(formData.get("workspaceId") ?? "");
-
-  if (!workspaceId) {
-    redirect("/dashboard");
-  }
-
-  await connectToDatabase();
-
-  const workspace = await Workspace.findById(workspaceId).lean();
-
-  if (!workspace) {
-    redirect("/dashboard");
-  }
-
-  // Check if user is owner
-  if (String(workspace.owner) !== session.user.id) {
-    redirect("/dashboard");
-  }
-
-  // Delete all tasks in the workspace
-  await Task.deleteMany({ workspace: new mongoose.Types.ObjectId(workspaceId) });
-
-  // Delete the workspace
-  await Workspace.findByIdAndDelete(workspaceId);
-
-  revalidatePath("/dashboard");
-  revalidatePath("/tasks");
-  redirect("/dashboard");
-}
 
 export default async function DashboardPage() {
   const session = await getSafeSession();
@@ -134,402 +12,210 @@ export default async function DashboardPage() {
   }
 
   const userId = session.user.id;
-
-  await connectToDatabase();
-
-  const userObjectId = new mongoose.Types.ObjectId(userId);
-  const workspaces = await Workspace.find({
-    $or: [{ owner: userObjectId }, { "members.userId": userObjectId }],
-  })
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  const workspaceIds = workspaces.map((workspace) => workspace._id);
-  const baseQuery: Record<string, unknown> = { workspace: { $in: workspaceIds } };
-
-  // Check if user can view all tasks (admin/owner) or only their own
-  const canViewAll = await Promise.all(
-    workspaceIds.map((id) => canUserAssignTasks(userId, String(id)))
-  );
-  const hasAdminAccess = canViewAll.some((v) => v);
-
-  // If not admin, only show tasks assigned to them or created by them
-  if (!hasAdminAccess) {
-    baseQuery.$or = [
-      { assignee: new mongoose.Types.ObjectId(userId) },
-      { createdBy: new mongoose.Types.ObjectId(userId) },
-    ];
-  }
-
-  const tasks = workspaceIds.length
-    ? await Task.find(baseQuery)
-        .populate("workspace", "name")
-        .populate("assignee", "name email")
-        .sort({ updatedAt: -1 })
-        .limit(8)
-        .lean()
-    : [];
-
-  const todoCount = tasks.filter((task) => task.status === "todo").length;
-  const inProgressCount = tasks.filter((task) => task.status === "in_progress").length;
-  const doneCount = tasks.filter((task) => task.status === "done").length;
   const stats = await getTaskStatsForUser(userId);
+  const userName = session.user.name ?? session.user.email ?? "User";
+  const completionRate = stats.totalTasks > 0 ? Math.round((stats.doneCount / stats.totalTasks) * 100) : 0;
 
   return (
-    <DashboardLayout>
-      <main id="main-content" className="min-h-screen px-4 py-8 text-slate-800">
-        <div className="mx-auto max-w-6xl space-y-6">
-          <header className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-medium uppercase tracking-[0.16em] text-sky-700">TaskFlow</p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">
-                Welcome back, {session.user.name ?? session.user.email}
-              </h1>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Link
-                href="/tasks"
-                prefetch={true}
-                className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
-              >
-                New Task
-              </Link>
-              <LogoutButton />
-            </div>
-          </header>
-
-        <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-sm text-slate-500">Loading overview...</div>}>
-          <DashboardStats stats={stats} />
-        </Suspense>
-
-        {/*<section className="grid gap-4 md:grid-cols-3">*/}
-        {/*  {[*/}
-        {/*    { label: "To do", value: todoCount, tone: "bg-slate-100 text-slate-700" },*/}
-        {/*    { label: "In progress", value: inProgressCount, tone: "bg-amber-100 text-amber-800" },*/}
-        {/*    { label: "Done", value: doneCount, tone: "bg-emerald-100 text-emerald-800" },*/}
-        {/*  ].map((card) => (*/}
-        {/*    <article key={card.label} className={`rounded-2xl border border-slate-200 p-5 ${card.tone}`}>*/}
-        {/*      <p className="text-sm font-medium uppercase tracking-[0.12em]">{card.label}</p>*/}
-        {/*      <p className="mt-4 text-3xl font-bold">{card.value}</p>*/}
-        {/*    </article>*/}
-        {/*  ))}*/}
-        {/*</section>*/}
-
-        <section className="grid gap-6 xl:grid-cols-[1.05fr_1.25fr]">
-          <div className="space-y-6">
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-900">Create workspace</h2>
-              <form action={createWorkspace} className="mt-4 space-y-3">
-                <div>
-                  <label htmlFor="workspace-name" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Workspace name
-                  </label>
-                  <input
-                    id="workspace-name"
-                    name="name"
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    placeholder="Marketing team"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="workspace-description" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Description
-                  </label>
-                  <textarea
-                    id="workspace-description"
-                    name="description"
-                    rows={3}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    placeholder="Campaign planning and launch coordination"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="member-emails" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Invite members (optional)
-                  </label>
-                  <input
-                    id="member-emails"
-                    name="memberEmails"
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    placeholder="email1@example.com, email2@example.com"
-                  />
-                  <p className="mt-1 text-xs text-slate-500">Separate multiple email addresses with commas</p>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
-                >
-                  Initialize Workspace
-                </button>
-              </form>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-900">Active workspaces</h2>
-              <div className="mt-4 space-y-3">
-                {workspaces.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                    No workspaces yet. Create one to start planning work.
-                  </p>
-                ) : (
-                  <>
-                    {workspaces.slice(0, 5).map((workspace) => {
-                      const isOwner = String(workspace.owner) === userId;
-                      const getInitials = (name: string) => {
-                        return name
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")
-                          .toUpperCase()
-                          .slice(0, 2);
-                      };
-                      const avatarColors = ["bg-sky-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500", "bg-purple-500"];
-                      const avatarColorIndex = workspace.name.length % avatarColors.length;
-
-                      return (
-                        <div key={String(workspace._id)} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-3">
-                              <div className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold text-white ${avatarColors[avatarColorIndex]}`}>
-                                {getInitials(workspace.name)}
-                              </div>
-                              <div>
-                                <p className="font-semibold text-slate-900">{workspace.name}</p>
-                                <p className="text-xs uppercase tracking-[0.12em] text-slate-500">/{workspace.slug}</p>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">
-                                Active
-                              </span>
-                              {isOwner && (
-                                <form action={deleteWorkspace}>
-                                  <input type="hidden" name="workspaceId" value={String(workspace._id)} />
-                                  <button
-                                    type="submit"
-                                    className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
-                                  >
-                                    Delete
-                                  </button>
-                                </form>
-                              )}
-                            </div>
-                          </div>
-                          {workspace.description ? (
-                            <p className="mt-2 text-sm text-slate-600">{workspace.description}</p>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                    {workspaces.length > 5 && (
-                      <Link href="/tasks" className="flex items-center gap-2 text-sm font-medium text-sky-600 hover:text-sky-700">
-                        View all {workspaces.length} workspaces
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </Link>
-                    )}
-                  </>
-                )}
+    <DashboardLayout userName={userName}>
+      <main className="w-full bg-slate-50 dark:bg-slate-950 flex-1">
+        <div className="p-6 lg:p-8">
+          <div className="flex flex-col w-full gap-8">
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-sky-600 to-sky-700 dark:from-slate-800 dark:to-slate-900 p-6 lg:p-8 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="relative z-10 flex flex-col">
+                <h1 className="text-3xl lg:text-4xl font-bold text-white tracking-tight">Dashboard</h1>
+                <p className="text-base text-slate-100 dark:text-slate-300 mt-2">Welcome back, {userName}</p>
               </div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-900">Quick task</h2>
-              <form action={createTaskAction} className="mt-4 space-y-3">
-                <div>
-                  <label htmlFor="task-workspace" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Workspace
-                  </label>
-                  <select
-                    id="task-workspace"
-                    name="workspaceId"
-                    defaultValue={workspaces[0]?._id ? String(workspaces[0]._id) : ""}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    required
-                  >
-                    {workspaces.length === 0 ? (
-                      <option value="">Create a workspace first</option>
-                    ) : (
-                      workspaces.map((workspace) => (
-                        <option key={String(workspace._id)} value={String(workspace._id)}>
-                          {workspace.name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Task title
-                  </label>
-                  <input
-                    id="task-title"
-                    name="title"
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    placeholder="Finalize launch checklist"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="task-description" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Details
-                  </label>
-                  <textarea
-                    id="task-description"
-                    name="description"
-                    rows={3}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    placeholder="Outline milestones and ownership before Friday."
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="task-due-date" className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Due date
-                  </label>
-                  <input
-                    id="task-due-date"
-                    name="dueDate"
-                    type="date"
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                  />
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label htmlFor="task-status" className="mb-1.5 block text-sm font-medium text-slate-700">
-                      Status
-                    </label>
-                    <select
-                      id="task-status"
-                      name="status"
-                      defaultValue="todo"
-                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    >
-                      <option value="todo">To do</option>
-                      <option value="in_progress">In progress</option>
-                      <option value="done" disabled>Done</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label htmlFor="task-priority" className="mb-1.5 block text-sm font-medium text-slate-700">
-                      Priority
-                    </label>
-                    <select
-                      id="task-priority"
-                      name="priority"
-                      defaultValue="medium"
-                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-                    >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                    </select>
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500"
-                >
-                  Create Task
-                </button>
-              </form>
+              <div className="absolute -right-20 -top-20 w-96 h-96 rounded-full bg-white/20 dark:bg-sky-500/20 blur-3xl pointer-events-none"></div>
+              <div className="absolute -left-20 -bottom-20 w-96 h-96 rounded-full bg-white/20 dark:bg-purple-500/20 blur-3xl pointer-events-none"></div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            {/* Stats Grid */}
+            <section className="flex flex-col gap-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-slate-900">Recent tasks</h2>
-
+                <div className="flex flex-col">
+                  <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Overview</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Task statistics and metrics</p>
+                </div>
               </div>
-              <div className="mt-4 space-y-3">
-                {tasks.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                    Create a workspace and add your first task.
-                  </p>
-                ) : (
-                  tasks.map((task) => {
-                    const workspaceName = typeof task.workspace === "string" ? task.workspace : task.workspace?.name ?? "Workspace";
-                    const assigneeName = typeof task.assignee === "string" ? task.assignee : task.assignee?.name ?? "Unassigned";
-                    const priorityStyles = {
-                      high: "bg-red-50 text-red-700 border-red-200",
-                      medium: "bg-blue-50 text-blue-700 border-blue-200",
-                      low: "bg-slate-100 text-slate-600 border-slate-200",
-                    } as const;
-                    const statusStyles = {
-                      todo: "bg-slate-100 text-slate-700",
-                      in_progress: "bg-amber-100 text-amber-800",
-                      done: "bg-emerald-100 text-emerald-800",
-                    } as const;
-                    const dueDateStatus = getDueDateStatus(task.dueDate, task.status, task.updatedAt);
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Todo Card */}
+                <div className="group bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 border border-slate-200 dark:border-slate-800 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[24px] text-slate-600 dark:text-slate-400">schedule</span>
+                    </div>
+                    <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">To Do</span>
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-bold text-slate-900 dark:text-white">{stats.todoCount || 0}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                    {stats.totalTasks > 0 ? Math.round((stats.todoCount / stats.totalTasks) * 100) : 0}% of total
+                  </div>
+                </div>
 
-                    const getInitials = (name: string) => {
-                      return name
-                        .split(" ")
-                        .map((n) => n[0])
-                        .join("")
-                        .toUpperCase()
-                        .slice(0, 2);
-                    };
-                    const avatarColors = ["bg-sky-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500", "bg-purple-500"];
-                    const avatarColorIndex = assigneeName.length % avatarColors.length;
+                {/* In Progress Card */}
+                <div className="group bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 border border-slate-200 dark:border-slate-800 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-12 h-12 rounded-xl bg-sky-100 dark:bg-sky-900/30 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[24px] text-sky-600 dark:text-sky-400">progress_activity</span>
+                    </div>
+                    <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">In Progress</span>
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-bold text-slate-900 dark:text-white">{stats.inProgressCount || 0}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                    {stats.totalTasks > 0 ? Math.round((stats.inProgressCount / stats.totalTasks) * 100) : 0}% of total
+                  </div>
+                </div>
 
-                    return (
-                      <article key={String(task._id)} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="font-semibold text-slate-900">{task.title}</p>
-                          <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${priorityStyles[task.priority as keyof typeof priorityStyles] || priorityStyles.medium}`}>
-                            {task.priority}
-                          </span>
-                        </div>
-                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                          <div className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-white ${avatarColors[avatarColorIndex]}`}>
-                            {getInitials(assigneeName)}
-                          </div>
-                          <span className="text-slate-600">{assigneeName}</span>
-                          <span className="text-slate-400">•</span>
-                          <span className={`rounded-full px-2 py-0.5 ${statusStyles[task.status as keyof typeof statusStyles]}`}>
-                            {task.status === "in_progress" ? "In progress" : task.status === "done" ? "Done" : "To do"}
-                          </span>
-                          {dueDateStatus.text ? (
-                            <>
-                              <span className="text-slate-400">•</span>
-                              <span className={`rounded-full px-2 py-0.5 ${dueDateStatus.color}`}>
-                                {dueDateStatus.text}
-                              </span>
-                            </>
-                          ) : null}
-                        </div>
-                        {task.description ? <p className="mt-2 text-sm text-slate-600">{task.description}</p> : null}
-                      </article>
-                    );
-                  })
-                )}
+                {/* Done Card */}
+                <div className="group bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 border border-slate-200 dark:border-slate-800 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[24px] text-emerald-600 dark:text-emerald-400">check_circle</span>
+                    </div>
+                    <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Completed</span>
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-bold text-slate-900 dark:text-white">{stats.doneCount || 0}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-emerald-600 dark:text-emerald-400 font-medium">
+                    {completionRate}% completion rate
+                  </div>
+                </div>
+
+                {/* Workspaces Card */}
+                <div className="group bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm hover:shadow-lg transition-all duration-300 border border-slate-200 dark:border-slate-800 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-12 h-12 rounded-xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[24px] text-purple-600 dark:text-purple-400">workspaces</span>
+                    </div>
+                    <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Workspaces</span>
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-bold text-slate-900 dark:text-white">{stats.workspaceCount || 0}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-purple-600 dark:text-purple-400 font-medium">
+                    Active workspaces
+                  </div>
+                </div>
               </div>
-              {tasks.length > 0 && (
-                <Link href="/tasks" className="mt-4 flex items-center gap-2 text-sm font-medium text-sky-600 hover:text-sky-700">
-                  Explore Kanban Board
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </Link>
-              )}
+            </section>
+
+            {/* Quick Actions & Productivity */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Quick Actions */}
+              <div className="lg:col-span-5 flex flex-col gap-6">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm hover:shadow-md transition-all duration-300 border border-slate-200 dark:border-slate-800 p-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-900/30 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[22px] text-sky-600 dark:text-sky-400">bolt</span>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Quick Actions</h3>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">Get started quickly</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <Link
+                      href="/workspaces"
+                      className="group flex items-center justify-between p-4 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all border border-slate-200 dark:border-slate-700"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-slate-600 dark:text-slate-400 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
+                          <span className="material-symbols-outlined text-[22px]">add_business</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-semibold text-slate-900 dark:text-white">New Workspace</span>
+                          <span className="text-xs text-slate-500 dark:text-slate-400">Create a workspace</span>
+                        </div>
+                      </div>
+                      <span className="material-symbols-outlined text-[20px] text-slate-400 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">arrow_forward</span>
+                    </Link>
+                    <Link
+                      href="/tasks"
+                      className="group flex items-center justify-between p-4 rounded-xl bg-sky-50 dark:bg-sky-900/20 hover:bg-sky-100 dark:hover:bg-sky-900/30 transition-all border border-sky-200 dark:border-sky-800"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-sky-600 dark:text-sky-400">
+                          <span className="material-symbols-outlined text-[22px]">add_task</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-semibold text-sky-700 dark:text-sky-300">New Task</span>
+                          <span className="text-xs text-sky-600 dark:text-sky-400">Add a task</span>
+                        </div>
+                      </div>
+                      <span className="material-symbols-outlined text-[20px] text-sky-600 dark:text-sky-400">arrow_forward</span>
+                    </Link>
+                  </div>
+                </div>
+              </div>
+
+              {/* Productivity Insights */}
+              <div className="lg:col-span-7 flex flex-col gap-6">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm hover:shadow-md transition-all duration-300 border border-slate-200 dark:border-slate-800 p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                        <span className="material-symbols-outlined text-[22px] text-emerald-600 dark:text-emerald-400">analytics</span>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Productivity</h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400">Your performance metrics</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/30">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">{completionRate}%</span>
+                    </div>
+                  </div>
+
+                  {/* Completion Rate */}
+                  <div className="flex flex-col gap-3 p-5 rounded-xl bg-slate-50 dark:bg-slate-800">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Completion Rate</span>
+                      <span className="text-lg font-bold text-slate-900 dark:text-white">{completionRate}%</span>
+                    </div>
+                    <div className="w-full h-3 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-700 ease-out" style={{ width: `${completionRate}%` }}></div>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                      <span>{stats.doneCount || 0} completed</span>
+                      <span>{stats.totalTasks || 0} total tasks</span>
+                    </div>
+                  </div>
+
+                  {/* Metrics Summary */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex flex-col p-4 rounded-xl bg-slate-50 dark:bg-slate-800">
+                      <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider font-medium">Total Tasks</span>
+                      <div className="flex items-baseline gap-1 mt-2">
+                        <span className="text-2xl font-bold text-slate-900 dark:text-white">{stats.totalTasks || 0}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[14px]">done</span> {stats.doneCount || 0} done
+                      </div>
+                    </div>
+                    <div className="flex flex-col p-4 rounded-xl bg-slate-50 dark:bg-slate-800">
+                      <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider font-medium">Workspaces</span>
+                      <div className="flex items-baseline gap-1 mt-2">
+                        <span className="text-2xl font-bold text-slate-900 dark:text-white">{stats.workspaceCount || 0}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-sky-600 dark:text-sky-400 font-medium flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[14px]">sync</span> Active
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-        </section>
-      </div>
-    </main>
+        </div>
+      </main>
     </DashboardLayout>
   );
 }

@@ -24,7 +24,7 @@ const createTaskSchema = z.object({
   priority: taskPrioritySchema.default("medium"),
   assignee: z.string().optional().default(""),
   tags: z.string().default(""),
-  dueDate: z.string().optional().default(""),
+  dueDate: z.string().trim().min(1, "Due date is required."),
 });
 
 const updateTaskSchema = createTaskSchema.extend({
@@ -97,14 +97,14 @@ export async function createTaskAction(formData: FormData) {
   const parsed = createTaskSchema.safeParse(rawData);
 
   if (!parsed.success) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Validation failed: check required fields")}&toastType=error`);
   }
 
   const userId = session.user.id;
   const workspace = await ensureWorkspaceAccess(userId, parsed.data.workspaceId);
 
   if (!workspace) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Workspace not found or access denied")}&toastType=error`);
   }
 
   // Check if user can assign tasks (admin/owner only)
@@ -113,7 +113,7 @@ export async function createTaskAction(formData: FormData) {
     if (!canAssign) {
       // Non-admins can only assign to themselves
       if (parsed.data.assignee !== userId) {
-        redirect("/tasks");
+        redirect(`/tasks?toast=${encodeURIComponent("Insufficient permissions to assign tasks")}&toastType=error`);
       }
     }
   }
@@ -137,7 +137,7 @@ export async function createTaskAction(formData: FormData) {
 
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
-  redirect("/tasks");
+  redirect(`/tasks?toast=${encodeURIComponent("Task created successfully")}&toastType=success`);
 }
 
 export async function updateTaskAction(formData: FormData) {
@@ -164,19 +164,19 @@ export async function updateTaskAction(formData: FormData) {
   const parsed = updateTaskSchema.safeParse(rawData);
 
   if (!parsed.success) {
-    redirect(taskId ? `/tasks/${taskId}` : "/tasks");
+    redirect(taskId ? `/tasks/${taskId}?toast=${encodeURIComponent("Validation failed: check required fields")}&toastType=error` : `/tasks?toast=${encodeURIComponent("Validation failed")}&toastType=error`);
   }
 
   const task = await ensureTaskAccess(session.user.id, parsed.data.taskId);
 
   if (!task) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Task not found or access denied")}&toastType=error`);
   }
 
   const workspace = await ensureWorkspaceAccess(session.user.id, parsed.data.workspaceId);
 
   if (!workspace) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Workspace not found or access denied")}&toastType=error`);
   }
 
   // Check if user is admin/owner
@@ -187,7 +187,7 @@ export async function updateTaskAction(formData: FormData) {
     // Check if user is trying to modify fields other than status
     const currentTask = await Task.findById(parsed.data.taskId).lean();
     if (!currentTask) {
-      redirect("/tasks");
+      redirect(`/tasks?toast=${encodeURIComponent("Task not found")}&toastType=error`);
     }
 
     // Only allow status to change, all other fields must remain the same
@@ -217,14 +217,14 @@ export async function updateTaskAction(formData: FormData) {
   // Validate status transitions: prevent Todo -> Done and Done -> Todo
   const currentTask = await Task.findById(parsed.data.taskId).lean();
   if (!currentTask) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Task not found")}&toastType=error`);
   }
 
   if (currentTask.status === "todo" && parsed.data.status === "done") {
-    redirect(`/tasks/${taskId}`);
+    redirect(`/tasks/${taskId}?toast=${encodeURIComponent("Invalid status transition")}&toastType=warning`);
   }
   if (currentTask.status === "done" && parsed.data.status === "todo") {
-    redirect(`/tasks/${taskId}`);
+    redirect(`/tasks/${taskId}?toast=${encodeURIComponent("Invalid status transition")}&toastType=warning`);
   }
 
   await connectToDatabase();
@@ -243,7 +243,7 @@ export async function updateTaskAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${parsed.data.taskId}`);
-  redirect(`/tasks/${parsed.data.taskId}`);
+  redirect(`/tasks/${parsed.data.taskId}?toast=${encodeURIComponent("Task updated successfully")}&toastType=success`);
 }
 
 export async function updateTaskStatusAction(formData: FormData) {
@@ -257,21 +257,21 @@ export async function updateTaskStatusAction(formData: FormData) {
   const status = String(formData.get("status") ?? "todo");
 
   if (!taskId || !taskStatusSchema.safeParse(status).success) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Invalid status")}&toastType=error`);
   }
 
   const task = await ensureTaskAccess(session.user.id, taskId);
 
   if (!task) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Task not found or access denied")}&toastType=error`);
   }
 
   // Validate status transitions: prevent Todo -> Done and Done -> Todo
   if (task.status === "todo" && status === "done") {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Invalid status transition")}&toastType=warning`);
   }
   if (task.status === "done" && status === "todo") {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Invalid status transition")}&toastType=warning`);
   }
 
   await connectToDatabase();
@@ -281,7 +281,7 @@ export async function updateTaskStatusAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${taskId}`);
-  redirect("/tasks");
+  redirect(`/tasks?toast=${encodeURIComponent("Task status updated")}&toastType=success`);
 }
 
 export async function updateTaskStatusById(taskId: string, status: string) {
@@ -330,13 +330,13 @@ export async function deleteTaskAction(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
 
   if (!taskId) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Missing task id")}&toastType=error`);
   }
 
   const task = await ensureTaskAccess(session.user.id, taskId);
 
   if (!task) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Task not found")}&toastType=error`);
   }
 
   // Check if user is admin/owner - only they can delete tasks
@@ -344,7 +344,7 @@ export async function deleteTaskAction(formData: FormData) {
   const canDelete = await canUserAssignTasks(session.user.id, workspaceId);
   
   if (!canDelete) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Insufficient permissions to delete task")}&toastType=error`);
   }
 
   await connectToDatabase();
@@ -352,7 +352,7 @@ export async function deleteTaskAction(formData: FormData) {
 
   revalidatePath("/dashboard");
   revalidatePath("/tasks");
-  redirect("/tasks");
+  redirect(`/tasks?toast=${encodeURIComponent("Task deleted successfully")}&toastType=success`);
 }
 
 export async function addTaskCommentAction(formData: FormData) {
@@ -370,13 +370,13 @@ export async function addTaskCommentAction(formData: FormData) {
   const parsed = commentSchema.safeParse(rawData);
 
   if (!parsed.success) {
-    redirect("/tasks");
+      redirect(`/tasks?toast=${encodeURIComponent("Validation failed: comment cannot be empty")}&toastType=error`);
   }
 
   const task = await ensureTaskAccess(session.user.id, parsed.data.taskId);
 
   if (!task) {
-    redirect("/tasks");
+      redirect(`/tasks?toast=${encodeURIComponent("Task not found or access denied")}&toastType=error`);
   }
 
   await connectToDatabase();
@@ -391,9 +391,9 @@ export async function addTaskCommentAction(formData: FormData) {
     },
   });
 
-  revalidatePath("/tasks");
-  revalidatePath(`/tasks/${parsed.data.taskId}`);
-  redirect(`/tasks/${parsed.data.taskId}`);
+    revalidatePath("/tasks");
+    revalidatePath(`/tasks/${parsed.data.taskId}`);
+    redirect(`/tasks/${parsed.data.taskId}?toast=${encodeURIComponent("Comment added")}&toastType=success`);
 }
 
 export async function deleteTaskCommentAction(formData: FormData) {
@@ -407,13 +407,13 @@ export async function deleteTaskCommentAction(formData: FormData) {
   const commentIndex = Number(formData.get("commentIndex") ?? "");
 
   if (!taskId || isNaN(commentIndex)) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Invalid request")}&toastType=error`);
   }
 
   const task = await ensureTaskAccess(session.user.id, taskId);
 
   if (!task) {
-    redirect("/tasks");
+    redirect(`/tasks?toast=${encodeURIComponent("Task not found or access denied")}&toastType=error`);
   }
 
   // Check if user is admin/owner - only they can delete comments
@@ -421,14 +421,14 @@ export async function deleteTaskCommentAction(formData: FormData) {
   const canDelete = await canUserAssignTasks(session.user.id, workspaceId);
   
   if (!canDelete) {
-    redirect(`/tasks/${taskId}`);
+    redirect(`/tasks/${taskId}?toast=${encodeURIComponent("Insufficient permissions to delete comment")}&toastType=error`);
   }
 
   await connectToDatabase();
 
   const taskDoc = await Task.findById(taskId).lean();
   if (!taskDoc || !Array.isArray(taskDoc.comments)) {
-    redirect(`/tasks/${taskId}`);
+    redirect(`/tasks/${taskId}?toast=${encodeURIComponent("Comment not found")}&toastType=error`);
   }
 
   // Remove the comment at the specified index
@@ -438,5 +438,5 @@ export async function deleteTaskCommentAction(formData: FormData) {
 
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${taskId}`);
-  redirect(`/tasks/${taskId}`);
+  redirect(`/tasks/${taskId}?toast=${encodeURIComponent("Comment deleted")}&toastType=success`);
 }

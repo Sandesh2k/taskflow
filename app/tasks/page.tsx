@@ -8,8 +8,9 @@ import { createTaskAction, deleteTaskAction } from "@/lib/task-actions";
 import { getDueDateStatus } from "@/lib/task-utils";
 import { canUserViewAllTasks, getUserRoleInWorkspace } from "@/lib/workspace-permissions";
 import DashboardLayout from "@/components/DashboardLayout";
-import TaskBoard from "@/components/TaskBoard";
+import TaskBoardWrapper from "@/components/TaskBoardWrapper";
 import TaskForm from "@/components/TaskForm";
+import CreateTaskModal from "@/components/CreateTaskModal";
 import Task from "@/models/Task";
 import User from "@/models/User";
 import Workspace from "@/models/Workspace";
@@ -31,6 +32,7 @@ export default async function TasksPage({
   }
 
   const userId = session.user.id;
+  const userName = session.user.name ?? session.user.email ?? "User";
 
   await connectToDatabase();
 
@@ -203,140 +205,150 @@ export default async function TasksPage({
     status === "in_progress" ? "In progress" : status === "done" ? "Done" : "To do";
 
   return (
-    <DashboardLayout>
-      <main id="main-content" className="min-h-screen px-4 py-10 text-slate-800">
-        <div className="mx-auto max-w-7xl space-y-6">
-          <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">TaskFlow</p>
-                <h1 className="mt-2 text-2xl font-semibold text-slate-900">Board & task filters</h1>
+    <DashboardLayout userName={userName}>
+      <main id="main-content" className="w-full bg-slate-50 dark:bg-slate-950 flex-1">
+        <div className="p-6 lg:p-8">
+          <div className="flex flex-col w-full gap-8">
+            {/* Welcome Header Banner */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-sky-600 to-sky-700 dark:from-slate-800 dark:to-slate-900 p-6 lg:p-8 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="relative z-10 flex flex-col">
+                <h1 className="text-3xl lg:text-4xl font-bold text-white tracking-tight">Tasks</h1>
+                <p className="text-base text-slate-100 dark:text-slate-300 mt-2">Manage and track your tasks</p>
               </div>
-              <div className="flex items-center gap-3">
-                <Link href="/dashboard" prefetch={true} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
-                  Dashboard
-                </Link>
+              <div className="absolute -right-20 -top-20 w-96 h-96 rounded-full bg-white/20 dark:bg-sky-500/20 blur-3xl pointer-events-none"></div>
+              <div className="absolute -left-20 -bottom-20 w-96 h-96 rounded-full bg-white/20 dark:bg-emerald-500/20 blur-3xl pointer-events-none"></div>
+            </div>
+
+            <CreateTaskModal
+              workspaces={workspaces.map(w => ({ _id: String(w._id), name: w.name }))}
+              workspaceMemberMap={Object.fromEntries(workspaceMemberMap)}
+              createTaskAction={createTaskAction}
+            />
+
+            <section className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm hover:shadow-md transition-all duration-300 border border-slate-200 dark:border-slate-800 p-6">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-900/30 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[22px] text-sky-600 dark:text-sky-400">filter_list</span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Filter & Sort</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Narrow down your tasks</p>
+                </div>
+                <div className="ml-auto">
+                  <a href="/tasks" className="rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                    Clear filters
+                  </a>
+                </div>
               </div>
-            </div>
-          </header>
 
-        <TaskForm 
-          workspaces={workspaces.map(w => ({ _id: String(w._id), name: w.name }))}
-          workspaceMemberMap={Object.fromEntries(workspaceMemberMap)}
-          createTaskAction={createTaskAction}
-        />
+              <form method="get" className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-5">
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Search Tasks</label>
+                  <input
+                    name="search"
+                    defaultValue={searchFilter}
+                    placeholder="Search title, description, or tags"
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-slate-900 dark:text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                  />
+                </div>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Filter & sort</h2>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
+                  <select
+                    name="status"
+                    defaultValue={statusFilter}
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-slate-900 dark:text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                  >
+                    <option value="all">All</option>
+                    <option value="todo">To do</option>
+                    <option value="in_progress">In progress</option>
+                    <option value="done">Done</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Assignee</label>
+                  <select
+                    name="assignee"
+                    defaultValue={assigneeFilter}
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-slate-900 dark:text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                  >
+                    <option value="all">All</option>
+                    <option value="unassigned">Unassigned</option>
+                    {memberOptions.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Tag</label>
+                  <select
+                    name="tag"
+                    defaultValue={tagFilter}
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-slate-900 dark:text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                  >
+                    <option value="all">All tags</option>
+                    {tagOptions.map((tag) => (
+                      <option key={tag} value={tag}>
+                        {tag}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Sort</label>
+                  <select
+                    name="sort"
+                    defaultValue={sortFilter}
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-slate-900 dark:text-slate-100 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                  >
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="priority">Priority</option>
+                    <option value="title">Title</option>
+                  </select>
+                </div>
+
+                <button
+                  type="submit"
+                  className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 shadow-sm hover:shadow-md md:col-span-2 xl:col-span-5"
+                >
+                  Apply Filters
+                </button>
+              </form>
+            </section>
+
+            {/* Role indicator banner */}
+            <div className={`rounded-2xl border p-4 text-sm flex items-center gap-3 ${
+              hasAdminAccess
+                ? "bg-sky-50 dark:bg-sky-900/20 border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300"
+                : "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+            }`}>
+              <span className="material-symbols-outlined text-[24px]">
+                {hasAdminAccess ? "admin_panel_settings" : "person"}
+              </span>
+              <p className="font-medium">
+                {hasAdminAccess
+                  ? `${userRole === "owner" ? "Owner" : "Admin"} view: You can see all tasks in your workspaces.`
+                  : `Member view: You can only see tasks assigned to you or created by you.`}
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <a href="/tasks" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                Clear filters
-              </a>
-            </div>
+
+            <Suspense fallback={
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 shadow-sm text-center">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-sky-600 mb-3"></div>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Loading task board...</p>
+              </div>
+            }>
+              <TaskBoardWrapper tasks={plainTasks as any} deleteTaskAction={deleteTaskAction} />
+            </Suspense>
           </div>
-
-          <form method="get" className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Search</label>
-              <input
-                name="search"
-                defaultValue={searchFilter}
-                placeholder="Search title, description, or tags"
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Status</label>
-              <select
-                name="status"
-                defaultValue={statusFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-              >
-                <option value="all">All</option>
-                <option value="todo">To do</option>
-                <option value="in_progress">In progress</option>
-                <option value="done">Done</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Assignee</label>
-              <select
-                name="assignee"
-                defaultValue={assigneeFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-              >
-                <option value="all">All</option>
-                <option value="unassigned">Unassigned</option>
-                {memberOptions.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Tag</label>
-              <select
-                name="tag"
-                defaultValue={tagFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-              >
-                <option value="all">All tags</option>
-                {tagOptions.map((tag) => (
-                  <option key={tag} value={tag}>
-                    {tag}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Sort</label>
-              <select
-                name="sort"
-                defaultValue={sortFilter}
-                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white"
-              >
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="priority">Priority</option>
-                <option value="title">Title</option>
-              </select>
-            </div>
-
-            <button
-              type="submit"
-              className="rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 md:col-span-2 xl:col-span-5"
-            >
-              Apply filters
-            </button>
-          </form>
-        </section>
-
-        {/* Role indicator banner */}
-        <div className={`rounded-2xl border p-4 text-sm ${
-          hasAdminAccess
-            ? "bg-sky-50 border-sky-200 text-sky-800"
-            : "bg-amber-50 border-amber-200 text-amber-800"
-        }`}>
-          <p className="font-medium">
-            {hasAdminAccess
-              ? `👑 ${userRole === "owner" ? "Owner" : "Admin"} view: You can see all tasks in your workspaces.`
-              : `👤 Member view: You can only see tasks assigned to you or created by you.`}
-          </p>
         </div>
-
-        <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm text-sm text-slate-500">Loading task board...</div>}>
-          <TaskBoard tasks={plainTasks as any} canEdit={true} />
-        </Suspense>
-      </div>
-    </main>
+      </main>
     </DashboardLayout>
   );
 }

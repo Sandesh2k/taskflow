@@ -21,9 +21,6 @@ export default function TaskStatsPanel({ stats }: { stats: TaskStatsSummary }) {
           <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">Overview</p>
           <h2 className="mt-2 text-lg font-semibold text-slate-900">Task statistics</h2>
         </div>
-        <Link href="/tasks" prefetch={true} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2">
-          Open board
-        </Link>
       </div>
 
       <div className="mt-5 grid gap-4 md:grid-cols-3">
